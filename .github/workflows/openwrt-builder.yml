@@ -17,7 +17,7 @@ on:
   workflow_dispatch:
 
 env:
-  REPO_URL: https://x-access-token:${{ secrets.Q_TOKENS }}@github.com/coolsnowwolf/qwrt.git
+  REPO_URL: https://x-access-token:${{ secrets.Q_TOKENS }}@github.com/Ailick/qwrt.git
   REPO_BRANCH: master
   FEEDS_CONF: feeds.conf.default
   CONFIG_FILE: .config
