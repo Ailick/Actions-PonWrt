@@ -78,6 +78,9 @@ jobs:
         cd openwrt
         $GITHUB_WORKSPACE/$DIY_P2_SH
 
+    - name: Reinstall feeds
+      run: cd openwrt && ./scripts/feeds install -a
+
     - name: Download package
       id: package
       run: |
