@@ -1,0 +1,105 @@
+From git@z Thu Jan  1 00:00:00 1970
+Subject: [PATCH v6] net: airoha: Add retry mechanism to
+ airoha_qdma_set_trtcm_param()
+From: "Leto Liu (刘涛)" <Leto.Liu@airoha.com>
+Date: Wed, 30 Sep 2026 08:58:48 +0200
+Message-Id: <20260930065855.46171-1-ansuelsmth@gmail.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+CPU accesses QDMA via the bus. When multiple modules are using the bus
+simultaneously, CPU access to QDMA may encounter bus timeouts and fails,
+resulting in QDMA configuration failures and potentially causing packet
+transmission issues. In order to mitigate the issue, introduce a retry
+mechanism to airoha_qdma_set_trtcm_param routine in order to ensure the
+configuration is correctly applied to the hardware.
+
+It's enough to try a second time for the TRTCM config to be actually
+applied to make sure we are not in the middle of bucket handling as it does
+operate on fixed time slot internally.
+
+Fixes: ef1ca9271313b ("net: airoha: Add sched HTB offload support")
+Signed-off-by: Leto Liu (刘涛) <Leto.Liu@airoha.com>
+[ improve commit description, drop memory block, apply better loop logic]
+Signed-off-by: Christian Marangi <ansuelsmth@gmail.com>
+---
+Changes v6:
+- Out of RFC
+- Fix to correct Author (confirmed by Airoha)
+Changes v5:
+- Drop memory block (not needed)
+- Loop only 2 times
+- Improve description
+Changes v4:
+- Rebase on top of net
+Changes v3:
+- Init data
+- Use continue instead of negative error for poll
+- Add memobry block after CFG_PARAM
+
+ drivers/net/ethernet/airoha/airoha_eth.c | 32 +++++++++++++++++++-----
+ drivers/net/ethernet/airoha/airoha_eth.h |  2 ++
+ 2 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/net/ethernet/airoha/airoha_eth.c b/drivers/net/ethernet/airoha/airoha_eth.c
+index 21ac80bdd084..b164a78ddac9 100644
+--- a/drivers/net/ethernet/airoha/airoha_eth.c
++++ b/drivers/net/ethernet/airoha/airoha_eth.c
+@@ -3120,14 +3120,34 @@ static int airoha_qdma_set_trtcm_param(struct airoha_qdma *qdma, int channel,
+ 		     FIELD_PREP(TRTCM_METER_GROUP_MASK, group) |
+ 		     FIELD_PREP(TRTCM_PARAM_INDEX_MASK, idx) |
+ 		     FIELD_PREP(TRTCM_PARAM_RATE_TYPE_MASK, mode);
++	int i;
+ 
+-	airoha_qdma_wr(qdma, REG_TRTCM_DATA_LOW(addr), val);
+-	airoha_qdma_wr(qdma, REG_TRTCM_CFG_PARAM(addr), config);
++	/*
++	 * HW might be in the middle of bucket handling and might
++	 * require an additional try to actually apply the new TRTCM
++	 * config.
++	 */
++	for (i = 0; i < TRTCM_CONFIG_RETRY_MAX; i++) {
++		u32 data = 0;
+ 
+-	return read_poll_timeout(airoha_qdma_rr, val,
+-				 val & TRTCM_PARAM_RW_DONE_MASK,
+-				 USEC_PER_MSEC, 10 * USEC_PER_MSEC, true,
+-				 qdma, REG_TRTCM_CFG_PARAM(addr));
++		airoha_qdma_wr(qdma, REG_TRTCM_DATA_LOW(addr), val);
++		airoha_qdma_wr(qdma, REG_TRTCM_CFG_PARAM(addr), config);
++
++		if (read_poll_timeout(airoha_qdma_rr, data,
++				      data & TRTCM_PARAM_RW_DONE_MASK,
++				      USEC_PER_MSEC, 10 * USEC_PER_MSEC,
++				      true, qdma, REG_TRTCM_CFG_PARAM(addr)))
++			continue;
++
++		if (airoha_qdma_get_trtcm_param(qdma, channel, addr, param,
++						mode, &data, NULL))
++			continue;
++
++		if (data == val)
++			return 0;
++	}
++
++	return -EBUSY;
+ }
+ 
+ static int airoha_qdma_set_trtcm_config(struct airoha_qdma *qdma, int channel,
+diff --git a/drivers/net/ethernet/airoha/airoha_eth.h b/drivers/net/ethernet/airoha/airoha_eth.h
+index 286f73e2e1e0..d270729e22ff 100644
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -184,6 +184,8 @@ enum trtcm_param {
+ #define TRTCM_TOKEN_RATE_MASK			GENMASK(23, 6)
+ #define TRTCM_TOKEN_RATE_FRACTION_MASK		GENMASK(5, 0)
+ 
++#define TRTCM_CONFIG_RETRY_MAX			2
++
+ enum airoha_dma_map_type {
+ 	AIROHA_DMA_UNMAPPED,
+ 	AIROHA_DMA_MAP_SINGLE,
+-- 
+2.55.0
+

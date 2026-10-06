@@ -1,0 +1,31 @@
+diff --git a/target/linux/airoha/an7583/base-files/etc/board.d/02_network b/target/linux/airoha/an7583/base-files/etc/board.d/02_network
+index 952e2ddc88..872259e384 100644
+--- a/target/linux/airoha/an7583/base-files/etc/board.d/02_network
++++ b/target/linux/airoha/an7583/base-files/etc/board.d/02_network
+@@ -16,7 +16,9 @@ an7583_setup_interfaces()
+ 		;;
+ 	nokia,xg-040g-mf|\
+ 	nokia,xg-040g-mf-ubi)
+-		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
++		# Add four copper ports to br-lan and bind wan directly to pon0.
++		# Opening wan starts the pon0 PMA, PLOAM, and OMCI lifecycle.
++		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "pon0"
+ 		;;
+ 	*)
+ 		echo "Unsupported hardware. Network interfaces not initialized"
+diff --git a/target/linux/airoha/image/an7581.mk b/target/linux/airoha/image/an7581.mk
+index a8642a226e..df8fdb3b8e 100644
+--- a/target/linux/airoha/image/an7581.mk
++++ b/target/linux/airoha/image/an7581.mk
+@@ -151,8 +151,9 @@ define Device/nokia_xg-040g-md-common
+   PAGESIZE := 2048
+   UBINIZE_OPTS := -E 5
+   DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio \
+-	kmod-phy-airoha-en8811h kmod-regulator-userspace-consumer \
+-	kmod-usb-ledtrig-usbport kmod-usb3
++    kmod-phy-airoha-en8811h kmod-regulator-userspace-consumer \
++    kmod-usb-ledtrig-usbport kmod-usb3 kmod-airoha-en7572 \
++    kmod-airoha-xpon airoha-ponctl airoha-pond
+ endef
+ 
+ define Device/nokia_xg-040g-md
