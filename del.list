@@ -1,4 +1,3 @@
 package/libs/argp-standalone/patches/001-throw-in-funcdef.patch
 package/libs/argp-standalone/patches/002-no_optimize.patch
 package/libs/argp-standalone/patches/900-fix-segfault-in_canon_doc_option.patch
-

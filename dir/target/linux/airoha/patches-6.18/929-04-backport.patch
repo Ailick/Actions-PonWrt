@@ -1,0 +1,201 @@
+--- a/drivers/net/ethernet/airoha/airoha_xfrm.c
++++ b/drivers/net/ethernet/airoha/airoha_xfrm.c
+@@ -111,7 +111,8 @@
+ 
+ static int airoha_xfrm_prepare_ipsec(struct net_device *dev)
+ {
+-	struct airoha_gdm_port *port = netdev_priv(dev);
++	struct airoha_gdm_dev *gdm = netdev_priv(dev);
++	struct airoha_gdm_port *port = gdm->port;
+ 	struct eip93_ipsec *ipsec;
+ 	int err;
+ 
+@@ -122,7 +123,7 @@
+ 	if (err)
+ 		return err;
+ 
+-	ipsec = eip93_ipsec_get(port->eth->dev);
++	ipsec = eip93_ipsec_get(gdm->eth->dev);
+ 	if (IS_ERR(ipsec)) {
+ 		netdev_dbg(dev,
+ 			   "EIP93 ESP packet backend is unavailable: %ld\n",
+@@ -238,19 +239,19 @@
+ 	if (!conduit || conduit->xfrmdev_ops != &airoha_xfrmdev_ops)
+ 		return NULL;
+ 
+-	return netdev_priv(conduit);
+-}
+-
+-static struct net_device *airoha_xfrm_dsa_rx_dev(struct airoha_gdm_port *port,
++	return ((struct airoha_gdm_dev *)netdev_priv(conduit))->port;
++}
++
++static struct net_device *airoha_xfrm_dsa_rx_dev(struct net_device *conduit,
+ 						 struct sk_buff *skb)
+ {
+ 	struct metadata_dst *md_dst = skb_metadata_dst(skb);
+-	struct dsa_port *cpu_dp = port->dev->dsa_ptr;
++	struct dsa_port *cpu_dp = conduit->dsa_ptr;
+ 	struct dsa_port *dp;
+ 	u32 source_port;
+ 
+ 	if (!md_dst || md_dst->type != METADATA_HW_PORT_MUX)
+-		return port->dev;
++		return conduit;
+ 
+ 	if (!cpu_dp || !cpu_dp->dst)
+ 		return NULL;
+@@ -259,7 +260,7 @@
+ 	list_for_each_entry(dp, &cpu_dp->dst->ports, list) {
+ 		if (dp->type != DSA_PORT_TYPE_USER ||
+ 		    dp->index != source_port || dp->cpu_dp != cpu_dp ||
+-		    dsa_port_to_conduit(dp) != port->dev || !dp->user)
++		    dsa_port_to_conduit(dp) != conduit || !dp->user)
+ 			continue;
+ 
+ 		return dp->user;
+@@ -288,10 +289,10 @@
+ 	return NULL;
+ }
+ 
+-static struct net_device *airoha_xfrm_dsa_rx_dev(struct airoha_gdm_port *port,
++static struct net_device *airoha_xfrm_dsa_rx_dev(struct net_device *conduit,
+ 						 struct sk_buff *skb)
+ {
+-	return port->dev;
++	return conduit;
+ }
+ #endif
+ 
+@@ -306,7 +307,7 @@
+ 	if (port)
+ 		return port;
+ 
+-	return netdev_priv(dev);
++	return ((struct airoha_gdm_dev *)netdev_priv(dev))->port;
+ }
+ 
+ static netdev_features_t airoha_xfrm_dev_features(struct net_device *dev)
+@@ -319,13 +320,17 @@
+ 	return airoha_xfrm_ipsec_features(port->xfrm_ipsec);
+ }
+ 
+-static struct net_device *airoha_xfrm_rx_dev(struct airoha_gdm_port *port,
+-					     struct sk_buff *skb)
+-{
+-	if (!netdev_uses_dsa(port->dev))
+-		return port->dev;
+-
+-	return airoha_xfrm_dsa_rx_dev(port, skb);
++static struct net_device *airoha_xfrm_rx_dev(struct sk_buff *skb)
++{
++	struct net_device *conduit = skb->dev;
++
++	if (!conduit)
++		return NULL;
++
++	if (!netdev_uses_dsa(conduit))
++		return conduit;
++
++	return airoha_xfrm_dsa_rx_dev(conduit, skb);
+ }
+ 
+ static void airoha_xfrm_state_advance_esn(struct xfrm_state *x)
+@@ -464,19 +469,29 @@
+ 
+ void airoha_xfrm_build_netdev(struct net_device *dev)
+ {
+-	struct airoha_gdm_port *port = netdev_priv(dev);
++	struct airoha_gdm_dev *gdm = netdev_priv(dev);
++	struct airoha_gdm_port *port = gdm->port;
+ 	netdev_features_t features;
+ 
+-	atomic_set(&port->xfrm_state_count, 0);
+-	atomic_set(&port->xfrm_out_state_count, 0);
+-	atomic_set(&port->xfrm_in_state_count, 0);
+-	if (airoha_xfrm_prepare_ipsec(dev))
++	if (atomic_inc_return(&port->xfrm_ipsec_refs) == 1) {
++		atomic_set(&port->xfrm_state_count, 0);
++		atomic_set(&port->xfrm_out_state_count, 0);
++		atomic_set(&port->xfrm_in_state_count, 0);
++	}
++
++	if (airoha_xfrm_prepare_ipsec(dev)) {
++		atomic_dec(&port->xfrm_ipsec_refs);
+ 		return;
++	}
+ 
+ 	features = airoha_xfrm_ipsec_features(port->xfrm_ipsec);
+ 	if (!(features & NETIF_F_HW_ESP)) {
+-		eip93_ipsec_put(port->xfrm_ipsec);
+-		port->xfrm_ipsec = NULL;
++		atomic_dec(&port->xfrm_ipsec_refs);
++		if (!atomic_read(&port->xfrm_ipsec_refs) &&
++		    port->xfrm_ipsec) {
++			eip93_ipsec_put(port->xfrm_ipsec);
++			port->xfrm_ipsec = NULL;
++		}
+ 		return;
+ 	}
+ 
+@@ -488,9 +503,13 @@
+ 
+ void airoha_xfrm_teardown_netdev(struct net_device *dev)
+ {
+-	struct airoha_gdm_port *port = netdev_priv(dev);
+-
+-	if (port->xfrm_ipsec) {
++	struct airoha_gdm_dev *gdm = netdev_priv(dev);
++	struct airoha_gdm_port *port = gdm->port;
++
++	if (dev->xfrmdev_ops != &airoha_xfrmdev_ops)
++		return;
++
++	if (atomic_dec_and_test(&port->xfrm_ipsec_refs) && port->xfrm_ipsec) {
+ 		eip93_ipsec_put(port->xfrm_ipsec);
+ 		port->xfrm_ipsec = NULL;
+ 	}
+@@ -519,7 +538,8 @@
+ 	netdev_features_t changed = (dev->features ^ features) &
+ 				    AIROHA_XFRM_FEATURES;
+ 	netdev_features_t requested = features & AIROHA_XFRM_FEATURES;
+-	struct airoha_gdm_port *port = netdev_priv(dev);
++	struct airoha_gdm_dev *gdm = netdev_priv(dev);
++	struct airoha_gdm_port *port = gdm->port;
+ 	netdev_features_t supported;
+ 	int err;
+ 
+@@ -738,7 +758,7 @@
+ 	struct net_device *dev;
+ 	struct xfrm_state *x;
+ 
+-	dev = airoha_xfrm_rx_dev(port, skb);
++	dev = airoha_xfrm_rx_dev(skb);
+ 	if (!dev)
+ 		return NULL;
+ 
+@@ -1367,8 +1387,11 @@
+ 			if (airoha_xfrm_dsa_dev_port(dev))
+ 				continue;
+ 
+-			port = netdev_priv(dev);
+-			if (dev == port->dev && port->xfrm_ipsec == ipsec) {
++			port = airoha_xfrm_dev_port(dev);
++			if (!port || port->xfrm_ipsec != ipsec)
++				continue;
++
++			if (atomic_dec_and_test(&port->xfrm_ipsec_refs)) {
+ 				eip93_ipsec_put(port->xfrm_ipsec);
+ 				port->xfrm_ipsec = NULL;
+ 			}
+--- a/drivers/net/ethernet/airoha/airoha_eth.h
++++ b/drivers/net/ethernet/airoha/airoha_eth.h
+@@ -687,6 +687,7 @@
+ 
+ #if IS_ENABLED(CONFIG_NET_AIROHA_XFRM)
+ 	struct eip93_ipsec *xfrm_ipsec;
++	atomic_t xfrm_ipsec_refs;
+ 	atomic_t xfrm_state_count;
+ 	atomic_t xfrm_out_state_count;
+ 	atomic_t xfrm_in_state_count;
+

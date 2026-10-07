@@ -20,5 +20,6 @@
 #sed -i 's/OpenWrt/P3TERX-Router/g' package/base-files/files/bin/config_generate
 
 git clone https://github.com/rchen14b/luci-app-airoha-npu.git tmp/luci-app-airoha-npu && \
-cp -r tmp/luci-app-airoha-npu/luci-app-airoha-npu feeds/luci/applications/ && \
+rm -rf tmp/luci-app-airoha-npu/luci-app-airoha-npu && \
+cp -r tmp/luci-app-airoha-npu feeds/luci/applications/ && \
 ln -sr feeds/luci/applications/luci-app-airoha-npu package/feeds/luci/luci-app-airoha-npu
